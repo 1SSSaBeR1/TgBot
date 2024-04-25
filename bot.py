@@ -65,8 +65,8 @@ async def start(update, context):
         "")
     return 1
 def see(update, context):
-
-
+    link = session.query(Link).filter_by(url="link").first()
+    print(link.description)
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.DEBUG
