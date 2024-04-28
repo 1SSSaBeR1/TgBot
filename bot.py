@@ -1,13 +1,15 @@
 import logging
-from sqlalchemy import engine, create_engine
+from sqlalchemy import engine, create_engine, select, update as sql_update
 from sqlalchemy.orm import sessionmaker
 import sqlite3
 
+from sqlalchemy.sql.expression import func
 from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     ReplyKeyboardMarkup,
-    Update, KeyboardButton,
+    Update,
+    KeyboardButton,
 )
 from telegram.ext import (
     Application,
@@ -25,7 +27,7 @@ sqlite_database = "sqlite:///db//links.db"
 engine = create_engine(sqlite_database, echo=True)
 Session = sessionmaker(bind=engine)
 session = Session()
-reply_keyboard = [["/start", "/help", "close"]]
+reply_keyboard = [["/link", "/see", "1"]]
 markup = ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=False)
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -37,12 +39,15 @@ logger = logging.getLogger(__name__)
 
 
 async def link(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(text="Напишите сюда свою ссылку", reply_markup=markup)
+    await update.message.reply_text(
+        text="Напишите сюда свою ссылку",
+        reply_markup=markup
+    )
     return 1
 
 
 def get_tags_from_db():
-    return ["какой-то тег1", "какой-то тег2", "кой-то тег3"]
+    return ["Познавательно", "Развличения", "Другое"]
 
 
 def generate_tags_battons(list_tags):
@@ -53,18 +58,19 @@ def generate_tags_battons(list_tags):
     return res
 
 
-async def handle_link(update, context):
-    link = Link(url=update.message.text, description="todo")
+async def handle_link(update: Update, context):
+    link = Link(
+        url=update.message.text, user_id=update.message.from_user.id, description="todo"
+    )
     session.add(link)
     session.commit()
     # тут нужно добавить в базу данных url и получить id записи
-    url_id = 10
     tag_list = get_tags_from_db()
     buttons = generate_tags_battons(tag_list)
     buttons.append(
         [
             InlineKeyboardButton(
-                text="Добавить выбранные теги", callback_data=f"added_tags:{url_id}"
+                text="Добавить выбранные теги", callback_data=f"added_tags:{link.id}"
             )
         ]
     )
@@ -101,7 +107,7 @@ async def stop(update, context):
 async def help_command(update, context):
     """Отправляет сообщение когда получена команда /help"""
     await update.message.reply_text(
-        "Я пока не умею помогать... Я только ваше эхо.", reply_markup=markup
+        "Я пока не умею помогать... Я только ваше эхо."
     )
 
 
@@ -113,22 +119,50 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         text="Дабро пожадовать в рекомендательный бот\n"
         "Вы можете сюросить разговор нажав/stop.\n"
-        "Чтобы сохранить сылку нажмите /link и отправьте ссылку",
-
-        reply_markup=markup
+        "Чтобы сохранить сылку нажмите /link и отправьте ссылку \n"
+             "Чтобы посмотреть видео, воспользуйтесь /see"
     )
 
 
 async def see(update, context):
-    link = session.query(Link).get(1)
-    await update.message.reply_text(link.url)
-    await update.message.reply_text('вы можете выбрать тэг, по которому вы хотите посмотреть видео', reply_markup=markup)
-    return 4
+    stmt = (
+        select(Link)
+        .where(Link.is_complited == False, Link.user_id == update.message.from_user.id)
+        .order_by(func.random())
+        .limit(1)
+    )
+    link = session.execute(stmt).scalar()
+    if link:
+        keyboard = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "заверишть", callback_data=f"complite_url:{link.id}"
+                    ), InlineKeyboardButton(
+                    "не посмотрел", callback_data=f"not_complite_url: {link.url}")
+                ]
+            ]
+        )
+        context.user_data['current_question'] = link.id
+        await update.message.reply_text(link.url, reply_markup=keyboard)
+
+        return 4
+    await update.message.reply_text("ссылок нет")
+    return ConversationHandler.END
+    # await update.message.reply_text(
+    #     "вы можете выбрать тэг, по которому вы хотите посмотреть видео",
+    #     reply_markup=markup,
+    # )
+
 
 async def url(update, context):
-    link = session.query(Link).get(1)
-    await update.message.reply_text(link.url)
-    return 5
+    await update.message.reply_text(text=
+                                'и не забудьте завершить ссылку')
+    question_id = context.user_data.get("current_question")
+
+    await update.message.reply_text(f'создан комментарий для ссылки с id {question_id}')
+    return 4
+
 
 async def update_tag_choice(update: Update, context: ContextTypes.DEFAULT_TYPE):
     _, tag = update.callback_query.data.split(":")
@@ -168,6 +202,27 @@ async def added_tags_for_url(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return ConversationHandler.END
 
 
+async def complite_url_hendler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    *_, link_id = update.callback_query.data.split(":")
+    stmt = sql_update(Link).where(Link.id == int(link_id)).values(is_complited=True)
+    session.execute(stmt)
+    session.commit()
+    await update.callback_query.delete_message()
+    await update.callback_query.message.reply_text(
+        "Поздравляю с просмотром!"
+    )
+    return ConversationHandler.END
+
+async def not_complite_url(update: Update, cotext: ContextTypes.DEFAULT_TYPE):
+    await update.callback_query.message.reply_text(text="завершаем процесс")
+    await update.callback_query.delete_message()
+    await update.callback_query.message.reply_text(
+        "Ссылка продолжает функционировать"
+    )
+    return ConversationHandler.END
+
+
+
 def main():
     application = (
         Application.builder()
@@ -197,8 +252,13 @@ def main():
                 # в режимe добавления тегов нажимаем назад
                 # CallbackQueryHandler(show_data, pattern="^" + str(SHOWING) + "$"),
             ],
-            4: [MessageHandler(filters.TEXT & ~filters.COMMAND, url)],
-            5: [CallbackQueryHandler(update_tag_choice, pattern="^" + "tag_choice:")]
+            4: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, url),
+                CallbackQueryHandler(
+                    complite_url_hendler, pattern="^" + "complite_url:"
+                ), CallbackQueryHandler(not_complite_url, pattern="^" + "not_complite_url:"),
+            ],
+            5: [CallbackQueryHandler(update_tag_choice, pattern="^" + "tag_choice:")],
         },
         fallbacks=[
             CommandHandler("stop", stop),
@@ -207,7 +267,7 @@ def main():
         ],
     )
 
-    # в случае команды старт не запускаем сценарий а просто выводим подсказки
+    # в случае команды старт не запускаем сценарий, а просто выводим подсказки
     application.add_handler(CommandHandler("start", start))
     application.add_handler(conv_handler)
     # application.add_handler(conv_handler1)
