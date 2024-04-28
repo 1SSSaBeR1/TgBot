@@ -10,5 +10,5 @@ class Link(SqlAlchemyBase):
     id: Mapped[int] = mapped_column(primary_key=True)
     url: Mapped[str]
     description: Mapped[str]=mapped_column(nullable=True)
-    is_complited: Mapped[bool] = mapped_column(server_default=False)
+    is_complited: Mapped[bool] = mapped_column(default=False)
     #post = relationship('blogs', backref='links')
